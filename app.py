@@ -1,24 +1,24 @@
-import os, tempfile, shutil, glob, threading, uuid, re, json
+import os
 from flask import Flask, request, jsonify, send_file, render_template_string, abort
+import tempfile, shutil, glob, threading, uuid, re
 from shutil import which
 from yt_dlp import YoutubeDL
 
 app = Flask(__name__)
 
-# ---------- Cookies from env ----------
+# ✅ Write cookies from Render Environment Variable → cookies.txt
 cookies_data = os.environ.get("COOKIES_TEXT", "").strip()
 if cookies_data:
     with open("cookies.txt", "w", encoding="utf-8") as f:
         f.write(cookies_data)
 
-# ---------- FFmpeg detection ----------
+# ---------- FFmpeg Detection ----------
 def ffmpeg_path():
-    p = which("ffmpeg")
-    return p if p and os.path.exists(p) else "/usr/bin/ffmpeg"
+    return which("ffmpeg") or "/usr/bin/ffmpeg" or "/data/data/com.termux/files/usr/bin/ffmpeg"
 
 HAS_FFMPEG = os.path.exists(ffmpeg_path())
 
-# ---------- HTML (your UI) ----------
+# ---------- HTML UI (UNCHANGED) ----------
 HTML = """
 <!DOCTYPE html>
 <html lang="en">
@@ -234,123 +234,90 @@ class Job:
         self.error = None
         JOBS[self.id] = self
 
+# ---------- Helpers ----------
 YTDLP_URL_RE = re.compile(r"^https?://", re.I)
 
 def format_map_for_env():
-    """Return yt-dlp format strings depending on ffmpeg availability."""
     if HAS_FFMPEG:
-        # Prefer H.264 + m4a for broad compatibility; fall back to best.
         return {
-            "mp4_720"  : "bv*[vcodec^=avc1][height<=720]+ba[ext=m4a]/b[ext=mp4][height<=720]/b",
-            "mp4_1080" : "bv*[vcodec^=avc1][height<=1080]+ba[ext=m4a]/b[ext=mp4][height<=1080]/b",
-            "mp4_best" : "bv*[vcodec^=avc1]+ba[ext=m4a]/b[ext=mp4]/b",
-            "audio_mp3": "bestaudio/best",
+            "mp4_720"  : "bestvideo[height<=720]+bestaudio/best",
+            "mp4_1080" : "bestvideo[height<=1080]+bestaudio/best",
+            "mp4_best" : "bestvideo+bestaudio/best",
+            "audio_mp3": "bestaudio/best"
         }
     else:
-        # No ffmpeg → must download progressive single-file MP4 only.
         return {
-            "mp4_720"  : "b[ext=mp4][height<=720]/b[ext=mp4]",
-            "mp4_1080" : "b[ext=mp4][height<=1080]/b[ext=mp4]",
-            "mp4_best" : "b[ext=mp4]/b",
-            "audio_mp3": None,  # cannot extract without ffmpeg
+            "mp4_720"  : "best[ext=mp4][height<=720]/best[ext=mp4]",
+            "mp4_1080" : "best[ext=mp4][height<=1080]/best[ext=mp4]",
+            "mp4_best" : "best[ext=mp4]/best",
+            "audio_mp3": None
         }
 
 def run_download(job, url, fmt_key, filename):
     try:
         if not YTDLP_URL_RE.match(url):
-            job.status = "error"; job.error = "Invalid URL"; return
+            job.status="error"; job.error="Invalid URL"; return
 
-        fmt = format_map_for_env().get(fmt_key)
-        if not fmt:
-            job.status = "error"; job.error = "FFmpeg not available for this format"; return
+        fmt = format_map_for_env()[fmt_key]
 
         def hook(d):
-            if d.get("status") == "downloading":
+            if d.get("status")=="downloading":
                 total = d.get("total_bytes") or d.get("total_bytes_estimate") or 1
-                job.percent = int((d.get("downloaded_bytes", 0) * 100) / total)
-            elif d.get("status") == "finished":
+                job.percent = int((d.get("downloaded_bytes",0) * 100) / total)
+            elif d.get("status")=="finished":
                 job.percent = 100
 
         base = (filename.strip() if filename else "%(title)s").rstrip(".")
         out = os.path.join(job.tmp, base + ".%(ext)s")
 
-        headers = {
-            # Android UA reduces SABR/web client skips
-            "User-Agent": "com.google.android.youtube/19.20.38 (Linux; U; Android 13) gzip",
-            "Accept-Language": "en-US,en;q=0.9",
-        }
-
         opts = {
             "format": fmt,
             "outtmpl": out,
-            "noplaylist": True,
-            "quiet": True,
-            "no_warnings": False,
-            "progress_hooks": [hook],
             "merge_output_format": "mp4",
-            "restrictfilenames": True,
-            "retries": 5,
-            "socket_timeout": 30,
-            "http_headers": headers,
-            "extractor_args": { "youtube": { "player_client": ["android"] } },
+            "cookiefile": "cookies.txt",
+            "progress_hooks": [hook],
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": True
         }
-
-        if os.path.exists("cookies.txt"):
-            opts["cookiefile"] = "cookies.txt"
 
         if HAS_FFMPEG:
             opts["ffmpeg_location"] = ffmpeg_path()
             if fmt_key == "audio_mp3":
-                opts["postprocessors"] = [
-                    {"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}
-                ]
+                opts["postprocessors"]=[{"key":"FFmpegExtractAudio","preferredcodec":"mp3"}]
 
         with YoutubeDL(opts) as y:
             y.extract_info(url, download=True)
 
-        files = glob.glob(os.path.join(job.tmp, "*"))
-        if not files:
-            raise RuntimeError("No output file produced")
+        files = glob.glob(job.tmp + "/*")
         job.file = max(files, key=os.path.getsize)
         job.status = "finished"
 
     except Exception as e:
-        job.status = "error"
-        job.error = (str(e) or "download failed")[:300]
+        job.status="error"; job.error=str(e)[:200]
 
 # ---------- Routes ----------
 @app.post("/start")
 def start():
-    d = request.json or {}
+    d = request.json
     job = Job()
-    threading.Thread(
-        target=run_download,
-        args=(job, d.get("url",""), d.get("format_choice","mp4_best"), d.get("filename")),
-        daemon=True
-    ).start()
+    threading.Thread(target=run_download, args=(job, d["url"], d["format_choice"], d.get("filename")), daemon=True).start()
     return jsonify({"job_id": job.id})
 
 @app.post("/info")
 def info():
-    d = request.json or {}
-    url = d.get("url","")
+    d = request.json
+    url = d["url"]
     try:
-        opts = {"skip_download": True, "quiet": True, "noplaylist": True}
-        if os.path.exists("cookies.txt"):
-            opts["cookiefile"] = "cookies.txt"
-        with YoutubeDL(opts) as y:
-            meta = y.extract_info(url, download=False)
-        title = meta.get("title", "")
-        channel = meta.get("uploader") or meta.get("channel", "")
-        thumb = meta.get("thumbnail")
-        dur = meta.get("duration") or 0
-        return jsonify({"title": title, "thumbnail": thumb, "channel": channel, "duration_str": f"{dur//60}:{dur%60:02d}"})
-    except Exception:
-        return jsonify({"error": "Preview failed"}), 400
-
-@app.get("/env")
-def env_info():
-    return jsonify({"ffmpeg": HAS_FFMPEG})
+        with YoutubeDL({"skip_download":True,"quiet":True,"noplaylist":True,"cookiefile":"cookies.txt"}) as y:
+            info = y.extract_info(url, download=False)
+        title = info.get("title","")
+        channel = info.get("uploader") or info.get("channel","")
+        thumb = info.get("thumbnail")
+        dur = info.get("duration") or 0
+        return jsonify({"title":title,"thumbnail":thumb,"channel":channel,"duration_str":f"{dur//60}:{dur%60:02d}"})
+    except:
+        return jsonify({"error":"Preview failed"}),400
 
 @app.get("/progress/<id>")
 def progress(id):
@@ -361,10 +328,9 @@ def progress(id):
 @app.get("/fetch/<id>")
 def fetch(id):
     j = JOBS.get(id)
-    if not j or not j.file: abort(404)
+    if not j: abort(404)
     resp = send_file(j.file, as_attachment=True, download_name=os.path.basename(j.file))
-    # clean up in background
-    threading.Thread(target=lambda: (shutil.rmtree(j.tmp, ignore_errors=True), JOBS.pop(id, None)), daemon=True).start()
+    threading.Thread(target=lambda: (shutil.rmtree(j.tmp, ignore_errors=True), JOBS.pop(id,None)), daemon=True).start()
     return resp
 
 @app.get("/")
@@ -372,4 +338,4 @@ def home():
     return render_template_string(HTML)
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT",5000)))
