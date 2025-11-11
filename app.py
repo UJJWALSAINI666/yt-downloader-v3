@@ -19,7 +19,9 @@ def ffmpeg_path():
 HAS_FFMPEG = os.path.exists(ffmpeg_path())
 
 # ---------- HTML UI (UNCHANGED) ----------
-HTML = """
+# Use a raw string for the HTML block so backslashes in embedded JS (e.g. \/)
+# are treated literally and don't trigger Python's invalid escape sequence warnings.
+HTML = r"""
 <!DOCTYPE html>
 <html lang="en">
 <head>
