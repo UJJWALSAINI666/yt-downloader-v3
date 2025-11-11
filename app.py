@@ -271,15 +271,19 @@ def run_download(job, url, fmt_key, filename):
         out = os.path.join(job.tmp, base + ".%(ext)s")
 
         opts = {
-            "format": fmt,
-            "outtmpl": out,
-            "merge_output_format": "mp4",
-            "cookiefile": "cookies.txt",
-            "progress_hooks": [hook],
-            "quiet": True,
-            "no_warnings": True,
-            "noplaylist": True
+    "format": "bestvideo+bestaudio/best",
+    "merge_output_format": "mp4",
+    "outtmpl": "%(title)s.%(ext)s",
+    "noplaylist": True,
+    "quiet": False,
+    "no_warnings": False,
+    "extractor_args": {
+        "youtube": {
+            "player_client": ["android"]   # Force Android Player Client
         }
+    }
+}
+
 
         if HAS_FFMPEG:
             opts["ffmpeg_location"] = ffmpeg_path()
