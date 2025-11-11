@@ -1,28 +1,24 @@
 #!/usr/bin/env bash
 set -e
 
-# Show Python/pip versions
-python -V || true
-pip -V || true
+# Ensure ffmpeg binaries are executable
+chmod +x "$(dirname "$0")/bin/ffmpeg" || true
+chmod +x "$(dirname "$0")/bin/ffprobe" || true
 
-# Ensure latest yt-dlp (nsig issues fix)
-python -m pip install --upgrade --no-cache-dir yt-dlp
+# Add local bin to PATH (Railway project root is /app)
+export PATH="$PATH:$(pwd)/bin"
 
-# Print versions for debugging
-python - <<'PY'
-import shutil, subprocess
-print("yt-dlp version:")
-subprocess.call(["yt-dlp", "--version"])
-print("ffmpeg:", shutil.which("ffmpeg"))
-PY
+# Optional: tell yt-dlp/ffmpeg where to look (usually PATH is enough)
+export FFMPEG_BINARY=ffmpeg
+export FFPROBE_BINARY=ffprobe
 
-# Start Gunicorn (Flask app = app.py with 'app' variable)
-# If your app object name or file is different, change below.
-exec gunicorn app:app \
-  --bind 0.0.0.0:${PORT:-8000} \
-  --workers 2 \
-  --threads 8 \
-  --timeout 360 \
-  --keep-alive 60 \
-  --access-logfile - \
-  --error-logfile -
+# Start your app (pick one):
+if command -v gunicorn >/dev/null 2>&1 && [ -f "app.py" ]; then
+  # Change the module:app if your Flask entrypoint is different
+  exec gunicorn app:app --bind 0.0.0.0:${PORT:-8080} --workers ${WORKERS:-1} --threads ${THREADS:-4} --timeout ${TIMEOUT:-120}
+elif [ -f "app.py" ]; then
+  exec python app.py
+else
+  echo "Cannot find app.py or gunicorn. Please adjust start.sh to your project."
+  exit 1
+fi
